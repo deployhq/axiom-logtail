@@ -181,6 +181,50 @@ RSpec.describe AxiomLogtail::Sink do
     end
   end
 
+  # Deferring verification is the whole point of the public method: in a Rails
+  # app the sink must be built while the environment file is evaluated, which is
+  # before initializers, so an error tracker is usually not up yet.
+  describe '.verify_in_background' do
+    it 'probes the device' do
+      probed = Queue.new
+      allow(device).to receive(:verify!) { probed << true }
+
+      described_class.verify_in_background(device)
+
+      expect(await(probed)).to be(true)
+    end
+
+    it 'reports a failure with the still-attached state' do
+      allow(device).to receive(:verify!).and_raise(AxiomLogtail::LogDevice::DeliveryFailed, 'HTTP 403')
+      reported = Queue.new
+
+      described_class.verify_in_background(device, ->(error, state) { reported << [error, state] })
+
+      error, state = await(reported)
+      expect(error).to be_a(AxiomLogtail::LogDevice::DeliveryFailed)
+      expect(state).to include('still attached')
+    end
+
+    it 'tolerates no error handler at all' do
+      allow(device).to receive(:verify!).and_raise(StandardError, 'boom')
+
+      expect { described_class.verify_in_background(device).join(5) }.not_to raise_error
+    end
+
+    # Pairs with `build(verify: false)`: the caller defers the probe, so build
+    # must not have already run one.
+    it 'is the only probe when build defers verification' do
+      allow(AxiomLogtail::LogDevice).to receive(:new).and_return(device)
+      allow(device).to receive(:verify!)
+
+      built = described_class.build(token: 'xaat-abc', dataset: 'app-production', verify: false)
+      expect(device).not_to have_received(:verify!)
+
+      described_class.verify_in_background(built).join(5)
+      expect(device).to have_received(:verify!).once
+    end
+  end
+
   describe '.scrub' do
     it 'redacts an ingest token' do
       message = 'failed to POST https://eu-central-1.aws.edge.axiom.co: token xaat-s3cr3t-Value.1 rejected'

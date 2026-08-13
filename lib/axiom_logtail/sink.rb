@@ -58,6 +58,27 @@ module AxiomLogtail
         nil
       end
 
+      # Probe delivery off-thread, so boot never blocks on an external HTTP call.
+      # The device is attached either way -- this surfaces a misconfiguration, it
+      # does not remediate one.
+      #
+      # Public because WHEN this runs matters, and `build` cannot know the right
+      # moment. In a Rails app the sink has to be built while the environment
+      # file is evaluated (the logger needs it), but that is before initializers,
+      # so an error tracker is typically not up yet. A probe that fails fast --
+      # bad region, DNS, TLS -- would then report to stderr and nowhere else.
+      # Pass `verify: false` to `build` and call this once the tracker is
+      # initialised (in Rails, from `config.after_initialize`).
+      #
+      # @return [Thread] so callers can join it in a test
+      def verify_in_background(device, on_error = nil)
+        Thread.new do
+          device.verify!
+        rescue StandardError => e
+          notify(on_error, e, 'verification FAILED, sink still attached and delivering')
+        end
+      end
+
       # Net::HTTP and URI errors echo request lines and URIs, and an Axiom ingest
       # token is long-lived. Never let one reach a log or an error tracker
       # verbatim.
@@ -69,17 +90,6 @@ module AxiomLogtail
 
       def region_for(region)
         blank?(region) ? LogDevice::DEFAULT_REGION : region
-      end
-
-      # Off-thread so boot never blocks on an external HTTP call. The device is
-      # returned and attached either way -- this surfaces a misconfiguration, it
-      # does not remediate one.
-      def verify_in_background(device, on_error)
-        Thread.new do
-          device.verify!
-        rescue StandardError => e
-          notify(on_error, e, 'verification FAILED, sink still attached and delivering')
-        end
       end
 
       # `warn` always reaches stderr, which process supervisors capture. That
