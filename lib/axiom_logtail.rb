@@ -5,6 +5,7 @@ require 'logtail'
 require 'axiom_logtail/version'
 require 'axiom_logtail/configuration'
 require 'axiom_logtail/log_device'
+require 'axiom_logtail/sink'
 require 'axiom_logtail/bounded_params'
 
 # `logtail-rack` is optional -- an app can use the Axiom sink without the Rack
