@@ -70,8 +70,23 @@ module AxiomLogtail
       # Pass `verify: false` to `build` and call this once the tracker is
       # initialised (in Rails, from `config.after_initialize`).
       #
-      # @return [Thread] so callers can join it in a test
+      # @return [Thread, nil] the probe thread, or nil if there was nothing to
+      #   probe. Callers can join the thread in a test.
       def verify_in_background(device, on_error = nil)
+        # Type-checked, not duck-typed, and not merely nil-checked. Rails'
+        # `config.x.anything_unset` auto-vivifies an `ActiveSupport::OrderedOptions`
+        # rather than returning nil, and that object answers `respond_to?` TRUE
+        # for every name while raising KeyError when actually called. A caller
+        # handing us one would otherwise spawn a thread that dies with
+        # `KeyError: :verify is blank` and reports the sink as "still attached
+        # and delivering" -- the exact alarm this method exists to make
+        # trustworthy, fired when no sink was ever built.
+        unless device.is_a?(LogDevice)
+          notify(on_error, TypeError.new("expected an AxiomLogtail::LogDevice, got #{device.class}"),
+                 'no sink to verify')
+          return nil
+        end
+
         Thread.new do
           device.verify!
         rescue StandardError => e

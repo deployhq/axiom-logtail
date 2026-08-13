@@ -4,7 +4,12 @@ require 'spec_helper'
 require 'timeout'
 
 RSpec.describe AxiomLogtail::Sink do
-  let(:device) { instance_double(AxiomLogtail::LogDevice) }
+  # A REAL device, not an instance_double: `verify_in_background` type-checks
+  # with `is_a?(LogDevice)` on purpose (see the impostor context below), and a
+  # verifying double is not an instance of the class. Construction is cheap and
+  # connects to nothing -- the parent gem starts its flush threads lazily, on
+  # first #write.
+  let(:device) { AxiomLogtail::LogDevice.new('xaat-test', 'app-production') }
 
   before do
     # stderr belongs to the suite, not to these examples.
@@ -203,6 +208,55 @@ RSpec.describe AxiomLogtail::Sink do
       error, state = await(reported)
       expect(error).to be_a(AxiomLogtail::LogDevice::DeliveryFailed)
       expect(state).to include('still attached')
+    end
+
+    # Rails' `config.x.anything_unset` auto-vivifies an OrderedOptions rather
+    # than returning nil, and that object answers respond_to? TRUE for every
+    # name while raising KeyError when actually called. Both consuming apps hit
+    # this: their `next if device.nil?` guard never fired outside production, so
+    # every dev/test/console boot spawned a thread that died with
+    # `KeyError: :verify is blank` and reported the sink "still attached and
+    # delivering" when none was ever built. A duck-type check does not save you
+    # here -- only a type check does.
+    context 'when handed something that is not a device' do
+      # Stands in for ActiveSupport::OrderedOptions without depending on Rails.
+      let(:impostor) do
+        Class.new do
+          def respond_to_missing?(_name, _include_private = false)
+            true
+          end
+
+          def method_missing(name, *_args)
+            raise KeyError, ":#{name} is blank"
+          end
+        end.new
+      end
+
+      it 'does not spawn a thread' do
+        expect(Thread).not_to receive(:new)
+
+        described_class.verify_in_background(impostor)
+      end
+
+      it 'returns nil rather than a thread' do
+        expect(described_class.verify_in_background(impostor)).to be_nil
+      end
+
+      # The state must NOT claim the sink is attached and delivering.
+      it 'reports that there was no sink, not a delivery failure' do
+        reported = []
+
+        described_class.verify_in_background(impostor, ->(error, state) { reported << [error, state] })
+
+        error, state = reported.first
+        expect(error).to be_a(TypeError)
+        expect(state).to eq('no sink to verify')
+        expect(state).not_to include('still attached')
+      end
+
+      it 'treats nil the same way' do
+        expect(described_class.verify_in_background(nil)).to be_nil
+      end
     end
 
     it 'tolerates no error handler at all' do
